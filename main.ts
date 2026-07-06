@@ -22,8 +22,8 @@ async function main(): Promise<void> {
     console.log(`Deposito exitoso. Nuevo saldo: $${datos.nuevoSaldo}`);
   });
 
-  cajero.on('transferenciaRealizada', (datos: { origen: string; destino: string; monto: number; nuevoSaldoOrigen: number }) => {
-    console.log(`Transferencia exitosa. Nuevo saldo: $${datos.nuevoSaldoOrigen}`);
+  cajero.on('transferenciaRealizada', (datos: { origen: string; destino: string; monto: number; nuevoSaldoOrigen: number; comision: number }) => {
+    console.log(`Transferencia exitosa. Nuevo saldo: $${datos.nuevoSaldoOrigen} (comision: $${datos.comision})`);
   });
 
   cajero.on('retiroRealizado', (datos: { titular: string; monto: number; nuevoSaldo: number }) => {
@@ -32,6 +32,18 @@ async function main(): Promise<void> {
 
   cajero.on('operacionInvalida', (datos: { tipo: string; razon: string }) => {
     console.log(`[${datos.tipo}] ${datos.razon}`);
+  });
+
+  cajero.on('movimientoRegistrado', (datos: { titular: string; tipo: string; monto: number }) => {
+    console.log(`[Auditoria] ${datos.titular} realizo ${datos.tipo} por $${datos.monto}`);
+  });
+
+  cajero.on('saldoBajo', (datos: { titular: string; saldo: number; umbral: number }) => {
+    console.log(`Alerta: ${datos.titular} tiene saldo bajo ($${datos.saldo}) por debajo de $${datos.umbral}`);
+  });
+
+  cajero.on('cuentaBloqueada', (datos: { titular: string }) => {
+    console.log(`Cuenta bloqueada temporalmente para ${datos.titular}.`);
   });
 
   cajero.on('sesionCerrada', () => {

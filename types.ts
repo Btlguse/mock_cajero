@@ -5,6 +5,14 @@ export interface DatosCuenta {
   saldo: number;
 }
 
+export interface Movimiento {
+  tipo: 'deposito' | 'retiro' | 'transferencia' | 'consulta';
+  monto: number;
+  fecha: string;
+  estado: 'completado' | 'rechazado';
+  descripcion?: string;
+}
+
 export enum OPCION_MENU {
   AccederCuenta = 1,
   Salir = 2,

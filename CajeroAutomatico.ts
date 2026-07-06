@@ -70,6 +70,11 @@ export class CajeroAutomatico extends EventEmitter {
       return;
     }
 
+    if (cuenta.estaBloqueada()) {
+      this.emit('cuentaBloqueada', { titular: cuenta.getTitular() });
+      return;
+    }
+
     let sesionActiva = true;
 
     while (sesionActiva) {
@@ -110,31 +115,44 @@ export class CajeroAutomatico extends EventEmitter {
   }
 
   private autenticarConCache(numero: string, pin: string): Cuenta | null {
+    const cuenta = this.cuentas.find((item) => item.getNumeroCuenta() === numero);
+
+    if (!cuenta) {
+      this.emit('autenticacionFallida', { numero });
+      return null;
+    }
+
+    if (cuenta.estaBloqueada()) {
+      this.emit('cuentaBloqueada', { titular: cuenta.getTitular() });
+      return null;
+    }
+
     const clave = `${numero}:${pin}`;
-
     if (this.cacheAutenticacion.has(clave)) {
-      const cuenta = this.cacheAutenticacion.get(clave)!;
-      this.emit('autenticacionExitosa', cuenta);
-      return cuenta;
+      const cuentaCacheada = this.cacheAutenticacion.get(clave)!;
+      this.emit('autenticacionExitosa', cuentaCacheada);
+      return cuentaCacheada;
     }
 
-    const cuenta = this.cuentas.find(
-      (c) => c.getNumeroCuenta() === numero && c.getPin() === pin
-    );
-
-    if (cuenta) {
-      this.cacheAutenticacion.set(clave, cuenta);
-      this.emit('autenticacionExitosa', cuenta);
-      return cuenta;
+    if (!cuenta.validarPin(pin)) {
+      this.emit('autenticacionFallida', { numero });
+      return null;
     }
 
-    this.emit('autenticacionFallida', { numero });
-    return null;
+    this.cacheAutenticacion.set(clave, cuenta);
+    this.emit('autenticacionExitosa', cuenta);
+    return cuenta;
   }
 
   private consultarSaldo(cuenta: Cuenta): void {
-    const saldo = cuenta.getSaldo();
-    this.emit('saldoConsultado', { titular: cuenta.getTitular(), saldo });
+    const resultado = cuenta.consultarSaldo();
+
+    if (resultado.estado === 'error') {
+      this.emit('operacionInvalida', { tipo: 'consulta', razon: resultado.mensaje });
+      return;
+    }
+
+    this.emit('saldoConsultado', { titular: cuenta.getTitular(), saldo: resultado.valor });
   }
 
   private async depositar(cuenta: Cuenta, rl: Interface): Promise<void> {
@@ -145,13 +163,19 @@ export class CajeroAutomatico extends EventEmitter {
       return;
     }
 
-    if (monto <= 0) {
-      this.emit('operacionInvalida', { tipo: 'deposito', razon: 'monto debe ser positivo' });
+    const resultado = cuenta.depositar(monto);
+
+    if (resultado.estado === 'error') {
+      this.emit('operacionInvalida', { tipo: 'deposito', razon: resultado.mensaje });
       return;
     }
 
-    cuenta.setSaldo(cuenta.getSaldo() + monto);
-    this.emit('depositoRealizado', { titular: cuenta.getTitular(), monto, nuevoSaldo: cuenta.getSaldo() });
+    this.emit('depositoRealizado', { titular: cuenta.getTitular(), monto, nuevoSaldo: resultado.valor });
+    this.emit('movimientoRegistrado', { titular: cuenta.getTitular(), tipo: 'deposito', monto });
+
+    if (resultado.valor < 100) {
+      this.emit('saldoBajo', { titular: cuenta.getTitular(), saldo: resultado.valor, umbral: 100 });
+    }
   }
 
   private async transferir(cuentaOrigen: Cuenta, rl: Interface): Promise<void> {
@@ -170,24 +194,25 @@ export class CajeroAutomatico extends EventEmitter {
       return;
     }
 
-    if (monto <= 0) {
-      this.emit('operacionInvalida', { tipo: 'transferencia', razon: 'monto debe ser positivo' });
+    const resultado = cuentaOrigen.transferir(monto, cuentaDestino);
+
+    if (resultado.estado === 'error') {
+      this.emit('operacionInvalida', { tipo: 'transferencia', razon: resultado.mensaje });
       return;
     }
 
-    if (cuentaOrigen.getSaldo() < monto) {
-      this.emit('operacionInvalida', { tipo: 'transferencia', razon: 'saldo insuficiente' });
-      return;
-    }
-
-    cuentaOrigen.setSaldo(cuentaOrigen.getSaldo() - monto);
-    cuentaDestino.setSaldo(cuentaDestino.getSaldo() + monto);
     this.emit('transferenciaRealizada', {
       origen: cuentaOrigen.getTitular(),
       destino: cuentaDestino.getTitular(),
       monto,
-      nuevoSaldoOrigen: cuentaOrigen.getSaldo(),
+      nuevoSaldoOrigen: resultado.valor.nuevoSaldoOrigen,
+      comision: resultado.valor.comision,
     });
+    this.emit('movimientoRegistrado', { titular: cuentaOrigen.getTitular(), tipo: 'transferencia', monto });
+
+    if (resultado.valor.nuevoSaldoOrigen < 100) {
+      this.emit('saldoBajo', { titular: cuentaOrigen.getTitular(), saldo: resultado.valor.nuevoSaldoOrigen, umbral: 100 });
+    }
   }
 
   private async retirar(cuenta: Cuenta, rl: Interface): Promise<void> {
@@ -198,18 +223,19 @@ export class CajeroAutomatico extends EventEmitter {
       return;
     }
 
-    if (monto <= 0) {
-      this.emit('operacionInvalida', { tipo: 'retiro', razon: 'monto debe ser positivo' });
+    const resultado = cuenta.retirar(monto);
+
+    if (resultado.estado === 'error') {
+      this.emit('operacionInvalida', { tipo: 'retiro', razon: resultado.mensaje });
       return;
     }
 
-    if (cuenta.getSaldo() < monto) {
-      this.emit('operacionInvalida', { tipo: 'retiro', razon: 'saldo insuficiente' });
-      return;
-    }
+    this.emit('retiroRealizado', { titular: cuenta.getTitular(), monto, nuevoSaldo: resultado.valor });
+    this.emit('movimientoRegistrado', { titular: cuenta.getTitular(), tipo: 'retiro', monto });
 
-    cuenta.setSaldo(cuenta.getSaldo() - monto);
-    this.emit('retiroRealizado', { titular: cuenta.getTitular(), monto, nuevoSaldo: cuenta.getSaldo() });
+    if (resultado.valor < 100) {
+      this.emit('saldoBajo', { titular: cuenta.getTitular(), saldo: resultado.valor, umbral: 100 });
+    }
   }
 
   private async pedirTexto(rl: Interface, mensaje: string): Promise<string> {
